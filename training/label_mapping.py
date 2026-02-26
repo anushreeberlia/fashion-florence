@@ -13,7 +13,12 @@ Strategy:
 - occasion_tags: DERIVE from their granular category names
 """
 
-from training.schema import validate_training_target
+try:
+    # Works when invoked as a module: python -m training.label_mapping
+    from training.schema import validate_training_target
+except ModuleNotFoundError:
+    # Works when invoked as a script path from training/: python training/label_mapping.py
+    from schema import validate_training_target
 
 # ── iMaterialist category (105 labels) → our 6 categories ──────────────────
 
