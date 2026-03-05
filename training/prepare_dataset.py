@@ -17,10 +17,14 @@ from pathlib import Path
 
 try:
     # Works when invoked as a module: python -m training.prepare_dataset
-    from training.label_mapping import LABEL_ID_TO_NAME, convert_imat_labels, format_as_training_target
+    from training.label_mapping import (
+        LABEL_ID_TO_NAME, convert_imat_labels, convert_hf_fields, format_as_training_target,
+    )
 except ModuleNotFoundError:
     # Works when invoked as a script path: python training/prepare_dataset.py
-    from label_mapping import LABEL_ID_TO_NAME, convert_imat_labels, format_as_training_target
+    from label_mapping import (
+        LABEL_ID_TO_NAME, convert_imat_labels, convert_hf_fields, format_as_training_target,
+    )
 
 DEFAULT_PROMPT = "Analyze this clothing item image and return structured fashion tags as JSON."
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
@@ -309,8 +313,12 @@ def main() -> None:
         dataset = _iter_hf_rows(args)
         for idx, row in enumerate(dataset):
             raw_rows += 1
-            label_ids = _label_ids_from_hf_row(row)
-            mapped = convert_imat_labels(label_ids)
+            mapped = convert_hf_fields(
+                category=row.get("category"),
+                color=row.get("color"),
+                material=row.get("material"),
+                style=row.get("style"),
+            )
             if mapped is None:
                 skipped_rows += 1
                 continue

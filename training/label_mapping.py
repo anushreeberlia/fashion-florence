@@ -543,6 +543,69 @@ def convert_imat_labels(label_ids: list[int]) -> dict | None:
     return result
 
 
+def convert_hf_fields(
+    category: str | None,
+    color: str | None,
+    material: str | None,
+    style: str | None = None,
+) -> dict | None:
+    """
+    Convert raw HF dataset string fields directly into our schema.
+    Skips the label-ID roundtrip to avoid fuzzy-matching errors.
+    Returns None if the item should be skipped.
+    """
+    if not category or not category.strip():
+        return None
+
+    category_str = category.strip()
+
+    mapped_category = CATEGORY_MAP.get(category_str)
+    if mapped_category is None:
+        return None
+
+    # Color: take the first recognized color from the field
+    primary_color = "unknown"
+    if color and color.strip():
+        parts = [p.strip() for p in color.strip().replace("/", ",").split(",") if p.strip()]
+        if not parts:
+            parts = [color.strip()]
+        for part in parts:
+            mapped = COLOR_MAP.get(part)
+            if mapped:
+                primary_color = mapped
+                break
+
+    # Material: direct lookup
+    mapped_material = None
+    if material and material.strip():
+        mapped_material = MATERIAL_MAP.get(material.strip())
+
+    # Style tags: derive from granular category + style field
+    style_tags: set[str] = set()
+    for tag in CATEGORY_TO_STYLE.get(category_str, []):
+        style_tags.add(tag)
+    if style and style.strip():
+        for tag in IMAT_STYLE_TO_OURS.get(style.strip(), []):
+            style_tags.add(tag)
+    if not style_tags:
+        style_tags.add("casual")
+
+    # Occasion tags: derive from granular category
+    occasion_tags: set[str] = set()
+    for tag in CATEGORY_TO_OCCASION.get(category_str, []):
+        occasion_tags.add(tag)
+    if not occasion_tags:
+        occasion_tags.add("everyday")
+
+    return {
+        "category": mapped_category,
+        "primary_color": primary_color,
+        "material": mapped_material,
+        "style_tags": sorted(style_tags),
+        "occasion_tags": sorted(occasion_tags),
+    }
+
+
 def format_as_training_target(labels: dict) -> str:
     """
     Format the mapped labels as the JSON string Florence-2 should learn to output.

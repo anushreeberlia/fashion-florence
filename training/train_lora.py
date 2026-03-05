@@ -122,7 +122,6 @@ def main() -> None:
     processor = AutoProcessor.from_pretrained(
         args.model_id,
         trust_remote_code=True,
-        use_fast=False,
     )
     model = AutoModelForCausalLM.from_pretrained(
         args.model_id,
