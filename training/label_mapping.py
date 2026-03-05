@@ -551,8 +551,8 @@ def convert_hf_fields(
 ) -> dict | None:
     """
     Convert raw HF dataset string fields directly into our schema.
-    Skips the label-ID roundtrip to avoid fuzzy-matching errors.
-    Returns None if the item should be skipped.
+    Only the category 105→6 mapping is strict; everything else passes through.
+    Returns None only if category is missing or explicitly skipped (swimwear etc).
     """
     if not category or not category.strip():
         return None
@@ -563,22 +563,22 @@ def convert_hf_fields(
     if mapped_category is None:
         return None
 
-    # Color: take the first recognized color from the field
+    # Color: try COLOR_MAP first, fall back to lowercased raw value
     primary_color = "unknown"
     if color and color.strip():
-        parts = [p.strip() for p in color.strip().replace("/", ",").split(",") if p.strip()]
-        if not parts:
-            parts = [color.strip()]
-        for part in parts:
+        raw_parts = [p.strip() for p in color.strip().replace("/", " ").replace(",", " ").split() if p.strip()]
+        for part in raw_parts:
             mapped = COLOR_MAP.get(part)
             if mapped:
                 primary_color = mapped
                 break
+        if primary_color == "unknown":
+            primary_color = raw_parts[0].lower() if raw_parts else "unknown"
 
-    # Material: direct lookup
-    mapped_material = None
+    # Material: try MATERIAL_MAP, fall back to lowercased raw value
+    mapped_material = "unknown"
     if material and material.strip():
-        mapped_material = MATERIAL_MAP.get(material.strip())
+        mapped_material = MATERIAL_MAP.get(material.strip(), material.strip().lower())
 
     # Style tags: derive from granular category + style field
     style_tags: set[str] = set()
