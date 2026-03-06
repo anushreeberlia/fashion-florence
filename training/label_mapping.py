@@ -150,21 +150,21 @@ COLOR_MAP = {
     "White": "white",
     "Gray": "gray",
     "Beige": "beige",
-    "Tan": "beige",
+    "Tan": "tan",
     "Brown": "brown",
     "Blue": "blue",
-    "Teal": "blue",
+    "Teal": "teal",
     "Green": "green",
     "Yellow": "yellow",
     "Orange": "orange",
     "Red": "red",
-    "Maroon": "red",
+    "Maroon": "maroon",
     "Pink": "pink",
-    "Peach": "pink",
+    "Peach": "peach",
     "Purple": "purple",
-    "Gold": "metallic",
-    "Silver": "metallic",
-    "Bronze": "metallic",
+    "Gold": "gold",
+    "Silver": "silver",
+    "Bronze": "bronze",
     "Multi Color": "multi",
     "Clear": "unknown",
 }
@@ -485,10 +485,7 @@ def convert_imat_labels(label_ids: list[int]) -> dict | None:
         "primary_color": "unknown",
         "material": None,
         "style_tags": set(),
-        "occasion_tags": set(),
     }
-
-    imat_category_name = None
 
     for lid in label_ids:
         if lid not in LABEL_ID_TO_NAME:
@@ -502,43 +499,30 @@ def convert_imat_labels(label_ids: list[int]) -> dict | None:
                 return None  # skip swimwear, underwear, etc.
             if result["category"] is None:
                 result["category"] = mapped
-                imat_category_name = name
 
-            # Derive style + occasion from granular category
             for tag in CATEGORY_TO_STYLE.get(name, []):
                 result["style_tags"].add(tag)
-            for tag in CATEGORY_TO_OCCASION.get(name, []):
-                result["occasion_tags"].add(tag)
 
         elif group == "color":
-            mapped = COLOR_MAP.get(name, "unknown")
+            mapped = COLOR_MAP.get(name, name.lower())
             if result["primary_color"] == "unknown":
                 result["primary_color"] = mapped
 
         elif group == "material":
-            mapped = MATERIAL_MAP.get(name)
-            if mapped and result["material"] is None:
-                result["material"] = mapped
+            if result["material"] is None:
+                result["material"] = name.lower()
 
         elif group == "style":
             for tag in IMAT_STYLE_TO_OURS.get(name, []):
                 result["style_tags"].add(tag)
 
-    # Must have at least a category to be useful
     if result["category"] is None:
         return None
 
-    # Default occasion if none derived
-    if not result["occasion_tags"]:
-        result["occasion_tags"].add("everyday")
-
-    # Default style if none derived
     if not result["style_tags"]:
         result["style_tags"].add("casual")
 
-    # Convert sets to sorted lists for deterministic output
     result["style_tags"] = sorted(result["style_tags"])
-    result["occasion_tags"] = sorted(result["occasion_tags"])
 
     return result
 
@@ -563,22 +547,16 @@ def convert_hf_fields(
     if mapped_category is None:
         return None
 
-    # Color: try COLOR_MAP first, fall back to lowercased raw value
+    # Color: take first color, lowercased as-is
     primary_color = "unknown"
     if color and color.strip():
         raw_parts = [p.strip() for p in color.strip().replace("/", " ").replace(",", " ").split() if p.strip()]
-        for part in raw_parts:
-            mapped = COLOR_MAP.get(part)
-            if mapped:
-                primary_color = mapped
-                break
-        if primary_color == "unknown":
-            primary_color = raw_parts[0].lower() if raw_parts else "unknown"
+        primary_color = raw_parts[0].lower() if raw_parts else "unknown"
 
-    # Material: try MATERIAL_MAP, fall back to lowercased raw value
+    # Material: lowercased as-is
     mapped_material = "unknown"
     if material and material.strip():
-        mapped_material = MATERIAL_MAP.get(material.strip(), material.strip().lower())
+        mapped_material = material.strip().lower()
 
     # Style tags: derive from granular category + style field
     style_tags: set[str] = set()
@@ -590,19 +568,11 @@ def convert_hf_fields(
     if not style_tags:
         style_tags.add("casual")
 
-    # Occasion tags: derive from granular category
-    occasion_tags: set[str] = set()
-    for tag in CATEGORY_TO_OCCASION.get(category_str, []):
-        occasion_tags.add(tag)
-    if not occasion_tags:
-        occasion_tags.add("everyday")
-
     return {
         "category": mapped_category,
         "primary_color": primary_color,
         "material": mapped_material,
         "style_tags": sorted(style_tags),
-        "occasion_tags": sorted(occasion_tags),
     }
 
 
