@@ -81,15 +81,23 @@ CATEGORY_MAP = {
     "Tutus": "dress",
 
     # layer
+    "Bomber Jackets": "layer",
     "Bubble Coats": "layer",
     "Capes & Capelets": "layer",
     "Cardigans": "layer",
+    "Denim Jackets": "layer",
+    "Down Coats": "layer",
+    "Fur Coats": "layer",
     "Jackets": "layer",
+    "Leather Jackets": "layer",
+    "Parkas": "layer",
     "Peacoats": "layer",
+    "Puffer Jackets": "layer",
     "Raincoats": "layer",
     "Suits & Blazers": "layer",
     "Trench Coats": "layer",
     "Three Piece Suits": "layer",
+    "Windbreakers": "layer",
 
     # shoes
     "Boots": "shoes",
@@ -110,10 +118,28 @@ CATEGORY_MAP = {
     "Winter Boots": "shoes",
 
     # accessory
+    "Backpacks": "accessory",
+    "Belts": "accessory",
+    "Bow Ties": "accessory",
     "Bra Straps": "accessory",
+    "Bracelets": "accessory",
+    "Brooches": "accessory",
+    "Clutches": "accessory",
+    "Earrings": "accessory",
+    "Gloves": "accessory",
+    "Hair Accessories": "accessory",
+    "Handbags": "accessory",
+    "Hats": "accessory",
+    "Necklaces": "accessory",
+    "Rings": "accessory",
+    "Scarves": "accessory",
     "Shoe Accessories": "accessory",
     "Shoe Inserts": "accessory",
     "Shoelaces": "accessory",
+    "Sunglasses": "accessory",
+    "Ties": "accessory",
+    "Wallets": "accessory",
+    "Watches": "accessory",
 
     # skip — don't map these (swimwear, underwear, costumes, etc.)
     "Athletic Sets": None,
@@ -550,7 +576,7 @@ def convert_hf_fields(
     # Color: take first color, lowercased as-is
     primary_color = "unknown"
     if color and color.strip():
-        raw_parts = [p.strip() for p in color.strip().replace("/", " ").replace(",", " ").split() if p.strip()]
+        raw_parts = [p.strip() for p in color.strip().replace("/", ",").split(",") if p.strip()]
         primary_color = raw_parts[0].lower() if raw_parts else "unknown"
 
     # Material: lowercased as-is
