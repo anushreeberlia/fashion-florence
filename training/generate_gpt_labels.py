@@ -254,8 +254,13 @@ def main() -> None:
             logger.warning(f"  [{labeled}/{args.max_rows}] {item_id}: Missing fields, skipping")
             continue
 
+        try:
+            rel_path = str(image_path.relative_to(repo_root))
+        except ValueError:
+            rel_path = str(image_path)
+
         record = {
-            "image_path": str(image_path.relative_to(repo_root)),
+            "image_path": rel_path,
             "prompt": FLORENCE_PROMPT,
             "target": json.dumps(tags, ensure_ascii=False, separators=(",", ":")),
             "_item_id": item_id,
