@@ -251,9 +251,9 @@ def main() -> None:
 
         # Call GPT-4o mini
         tags = call_gpt_vision(image_b64, retries=args.max_retries)
-        if tags is None:
+        if not isinstance(tags, dict):
             errors += 1
-            logger.warning(f"  [{labeled}/{args.max_rows}] {item_id}: GPT failed, skipping")
+            logger.warning(f"  [{labeled}/{args.max_rows}] {item_id}: GPT returned non-dict, skipping")
             continue
 
         required = {"category", "primary_color", "material", "style_tags"}
