@@ -189,12 +189,20 @@ def main() -> None:
     completed_ids: set[str] = set()
     records: list[dict] = []
 
-    if args.resume and progress_file.exists():
+    # Always load existing progress to avoid overwriting it
+    if progress_file.exists():
         for line in progress_file.read_text().strip().splitlines():
             row = json.loads(line)
             records.append(row)
             completed_ids.add(row.get("_item_id", ""))
-        logger.info(f"Resumed: {len(records)} already labeled")
+        if records:
+            logger.info(f"Found {len(records)} existing rows in progress file")
+            if not args.resume:
+                logger.error(
+                    f"Progress file has {len(records)} rows. "
+                    f"Use --resume to continue, or delete {progress_file} to start fresh."
+                )
+                sys.exit(1)
 
     logger.info(f"Loading dataset: {args.hf_dataset} (offset={args.offset}, max={args.max_rows})")
     dataset = load_dataset(args.hf_dataset, split=args.hf_split, streaming=True)
