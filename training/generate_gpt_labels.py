@@ -74,7 +74,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--out-dir", default="data/processed_v2")
     p.add_argument("--train-ratio", type=float, default=0.9)
     p.add_argument("--val-ratio", type=float, default=0.05)
-    p.add_argument("--batch-save-every", type=int, default=100,
+    p.add_argument("--batch-save-every", type=int, default=50,
                    help="Write progress to disk every N items.")
     p.add_argument("--resume", action="store_true",
                    help="Resume from existing progress file.")
@@ -147,6 +147,29 @@ def call_gpt_vision(image_b64: str, retries: int = 3) -> dict | None:
     return None
 
 
+def _fsync_path(path: Path) -> None:
+    """Force-flush a file to disk (critical for Colab's Drive FUSE mount)."""
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+        os.fsync(fd)
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _flush_save(progress_file: Path, records: list[dict]) -> None:
+    """Write progress JSONL atomically and force-flush to Drive."""
+    tmp = progress_file.with_suffix(".jsonl.tmp")
+    with open(tmp, "w") as f:
+        for r in records:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    tmp.rename(progress_file)
+    _fsync_path(progress_file)
+    _fsync_path(progress_file.parent)
+
+
 def save_image(pil_image, path: Path) -> bool:
     """Save a PIL image or image bytes to disk."""
     try:
@@ -156,9 +179,12 @@ def save_image(pil_image, path: Path) -> bool:
         elif isinstance(pil_image, bytes):
             with open(path, "wb") as f:
                 f.write(pil_image)
+                f.flush()
+                os.fsync(f.fileno())
         else:
             pil_image = pil_image.convert("RGB")
             pil_image.save(path, format="JPEG", quality=90)
+        _fsync_path(path)
         return True
     except Exception as e:
         logger.warning(f"Failed to save image {path}: {e}")
@@ -184,6 +210,23 @@ def main() -> None:
     if not images_dir.is_absolute():
         images_dir = (repo_root / images_dir).resolve()
     images_dir.mkdir(parents=True, exist_ok=True)
+
+    # Verify Drive is actually writable (catches unmounted/fake FUSE paths)
+    _probe = out_dir / ".write_probe"
+    try:
+        with open(_probe, "w") as f:
+            f.write("ok")
+            f.flush()
+            os.fsync(f.fileno())
+        _probe_content = _probe.read_text()
+        _probe.unlink()
+        if _probe_content != "ok":
+            raise IOError("read-back mismatch")
+        logger.info(f"Drive write verified: {out_dir}")
+    except Exception as e:
+        logger.error(f"FATAL: Cannot write to {out_dir}: {e}")
+        logger.error("Is Google Drive mounted? Run: from google.colab import drive; drive.mount('/content/drive')")
+        sys.exit(1)
 
     progress_file = out_dir / "labeling_progress.jsonl"
     completed_ids: set[str] = set()
@@ -282,11 +325,9 @@ def main() -> None:
             logger.info(f"  [{labeled}/{args.max_rows}] {item_id}: {tags.get('category')} "
                         f"| cost ~${est_cost:.2f}")
 
-        # Periodic save
+        # Periodic save (force-flush for Colab Drive FUSE)
         if labeled % args.batch_save_every == 0:
-            with open(progress_file, "w") as f:
-                for r in records:
-                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            _flush_save(progress_file, records)
             logger.info(f"  Progress saved ({labeled} rows)")
 
         if est_cost > args.cost_limit:
@@ -294,9 +335,7 @@ def main() -> None:
             break
 
     # Final save of progress
-    with open(progress_file, "w") as f:
-        for r in records:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    _flush_save(progress_file, records)
 
     # Split into train/val/test
     import random
@@ -317,6 +356,9 @@ def main() -> None:
             for r in split_rows:
                 row_out = {k: v for k, v in r.items() if not k.startswith("_")}
                 f.write(json.dumps(row_out, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        _fsync_path(path)
         logger.info(f"  {split_name}: {len(split_rows)} rows → {path}")
 
     # Stats
@@ -332,6 +374,9 @@ def main() -> None:
     stats_path = out_dir / "stats.json"
     with open(stats_path, "w") as f:
         json.dump(stats, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    _fsync_path(stats_path)
     logger.info(f"\nDone! Stats: {json.dumps(stats, indent=2)}")
 
 
