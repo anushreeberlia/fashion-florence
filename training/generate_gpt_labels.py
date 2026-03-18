@@ -59,6 +59,8 @@ JSON only, no markdown."""
 FLORENCE_PROMPT = "Analyze this clothing item image and return structured fashion tags as JSON."
 
 MAX_IMAGE_SIZE = 512
+OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
+OPENAI_VISION_MODEL = "gpt-4o-mini"
 
 
 def parse_args() -> argparse.Namespace:
@@ -109,33 +111,56 @@ def resize_for_gpt(image_bytes: bytes) -> bytes:
     return buf.getvalue()
 
 
-def call_gpt_vision(image_b64: str, retries: int = 3) -> dict | None:
-    """Send image to GPT-4o mini, return parsed JSON dict or None on failure."""
+def _responses_output_text(data: dict) -> str | None:
+    """Extract assistant text from POST /v1/responses JSON."""
+    err = data.get("error")
+    if err:
+        msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+        logger.warning(f"OpenAI response error: {msg}")
+        return None
+    for block in data.get("output") or []:
+        if block.get("type") != "message":
+            continue
+        for part in block.get("content") or []:
+            if part.get("type") == "output_text":
+                return (part.get("text") or "").strip()
+    return None
+
+
+def call_gpt_vision(image_b64: str, api_key: str, retries: int = 3) -> dict | None:
+    """Send image via Responses API; return parsed JSON dict or None on failure."""
+    key = (api_key or "").strip()
+    if not key:
+        logger.error("OpenAI API key is empty — use --api-key, --api-key-file, or OPENAI_API_KEY")
+        return None
     for attempt in range(retries):
         try:
-            key = os.environ.get("OPENAI_API_KEY", "").strip()
             resp = httpx.post(
-                "https://api.openai.com/v1/chat/completions",
+                OPENAI_RESPONSES_URL,
                 headers={
                     "Authorization": f"Bearer {key}",
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": "gpt-4o-mini",
-                    "messages": [
-                        {"role": "system", "content": GPT_SYSTEM},
-                        {"role": "user", "content": [
-                            {"type": "text", "text": GPT_PROMPT},
-                            {"type": "image_url", "image_url": {
-                                "url": f"data:image/jpeg;base64,{image_b64}",
-                                "detail": "low",
-                            }},
-                        ]},
+                    "model": OPENAI_VISION_MODEL,
+                    "instructions": GPT_SYSTEM,
+                    "input": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": GPT_PROMPT},
+                                {
+                                    "type": "input_image",
+                                    "image_url": f"data:image/jpeg;base64,{image_b64}",
+                                    "detail": "low",
+                                },
+                            ],
+                        }
                     ],
                     "temperature": 0.2,
-                    "max_tokens": 500,
+                    "max_output_tokens": 500,
                 },
-                timeout=30.0,
+                timeout=60.0,
             )
 
             if resp.status_code == 429:
@@ -145,11 +170,22 @@ def call_gpt_vision(image_b64: str, retries: int = 3) -> dict | None:
                 continue
 
             if resp.status_code != 200:
-                logger.warning(f"GPT error {resp.status_code}: {resp.text[:200]}")
+                body = resp.text[:500]
+                logger.warning(f"GPT error {resp.status_code}: {body}")
+                if "bearer" in body.lower() or resp.status_code == 401:
+                    logger.error(
+                        "Auth failed. Use --api-key=\"sk-...\" (equals + quotes) or "
+                        "--api-key-file so the key is not lost to the shell."
+                    )
                 time.sleep(2)
                 continue
 
-            text = resp.json()["choices"][0]["message"]["content"].strip()
+            data = resp.json()
+            text = _responses_output_text(data)
+            if not text:
+                logger.warning(f"No output_text in response: {str(data)[:300]}")
+                time.sleep(2)
+                continue
             if text.startswith("```"):
                 lines = text.split("\n")
                 text = "\n".join(lines[1:-1])
@@ -257,7 +293,11 @@ def main() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+    if len(api_key) < 20:
+        print("ERROR: API key looks too short or wrong.", file=sys.stderr)
+        sys.exit(1)
     os.environ["OPENAI_API_KEY"] = api_key
+    logger.info(f"OpenAI key OK (length {len(api_key)} chars)")
 
     from datasets import load_dataset
 
@@ -350,7 +390,7 @@ def main() -> None:
         image_b64 = base64.b64encode(resized).decode("utf-8")
 
         # Call GPT-4o mini
-        tags = call_gpt_vision(image_b64, retries=args.max_retries)
+        tags = call_gpt_vision(image_b64, api_key, retries=args.max_retries)
         if not isinstance(tags, dict):
             errors += 1
             logger.warning(f"  [{labeled}/{args.max_rows}] {item_id}: GPT returned non-dict, skipping")
