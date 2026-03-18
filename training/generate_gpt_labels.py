@@ -8,8 +8,10 @@ V1 used seed=42, max_rows=50000. This script uses --offset to skip past those
 rows in the shuffled stream, guaranteeing zero overlap.
 
 Usage:
-    export OPENAI_API_KEY=sk-...
-    python training/generate_gpt_labels.py \
+    # Colab: put key in a file (e.g. Drive), then:
+    python training/generate_gpt_labels.py --api-key-file /content/drive/MyDrive/openai_key.txt \
+        --out-dir ...
+    # Or: export OPENAI_API_KEY=sk-... && python training/generate_gpt_labels.py \
         --max-rows 50000 \
         --offset 50000 \
         --out-dir data/processed_v2
@@ -32,8 +34,6 @@ from PIL import Image
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger(__name__)
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 GPT_SYSTEM = "You are a fashion expert. Analyze clothing images and return structured JSON only."
 
@@ -83,6 +83,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-retries", type=int, default=3)
     p.add_argument("--cost-limit", type=float, default=15.0,
                    help="Stop if estimated cost exceeds this (USD).")
+    p.add_argument(
+        "--api-key-file",
+        default=None,
+        metavar="PATH",
+        help="Text file with OpenAI API key on first line (recommended on Colab; env OPENAI_API_KEY often missing in !python).",
+    )
     return p.parse_args()
 
 
@@ -101,10 +107,11 @@ def call_gpt_vision(image_b64: str, retries: int = 3) -> dict | None:
     """Send image to GPT-4o mini, return parsed JSON dict or None on failure."""
     for attempt in range(retries):
         try:
+            key = os.environ.get("OPENAI_API_KEY", "").strip()
             resp = httpx.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
+                    "Authorization": f"Bearer {key}",
                     "Content-Type": "application/json",
                 },
                 json={
@@ -224,9 +231,23 @@ def save_image(pil_image, path: Path) -> bool:
 def main() -> None:
     args = parse_args()
 
-    if not OPENAI_API_KEY:
-        print("ERROR: Set OPENAI_API_KEY environment variable.", file=sys.stderr)
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    if args.api_key_file:
+        kpath = Path(args.api_key_file).expanduser()
+        if not kpath.is_absolute():
+            kpath = kpath.resolve()
+        if not kpath.is_file():
+            print(f"ERROR: --api-key-file not found: {kpath}", file=sys.stderr)
+            sys.exit(1)
+        lines = [ln.strip() for ln in kpath.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        api_key = lines[0] if lines else ""
+    if not api_key:
+        print(
+            "ERROR: Set OPENAI_API_KEY or pass --api-key-file /path/to/key.txt (one line).",
+            file=sys.stderr,
+        )
         sys.exit(1)
+    os.environ["OPENAI_API_KEY"] = api_key
 
     from datasets import load_dataset
 
