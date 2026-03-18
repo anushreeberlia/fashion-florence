@@ -75,9 +75,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--train-ratio", type=float, default=0.9)
     p.add_argument("--val-ratio", type=float, default=0.05)
     p.add_argument("--batch-save-every", type=int, default=50,
-                   help="Write progress to disk every N items.")
+                   help="Append new rows to progress file every N items (never truncates old rows).")
     p.add_argument("--resume", action="store_true",
-                   help="Resume from existing progress file.")
+                   help="Deprecated: resume is automatic when labeling_progress.jsonl exists. Ignored.")
+    p.add_argument("--fresh", action="store_true",
+                   help="Delete existing labeling_progress.jsonl and start from zero (use with care).")
     p.add_argument("--max-retries", type=int, default=3)
     p.add_argument("--cost-limit", type=float, default=15.0,
                    help="Stop if estimated cost exceeds this (USD).")
@@ -157,17 +159,45 @@ def _fsync_path(path: Path) -> None:
         pass
 
 
-def _flush_save(progress_file: Path, records: list[dict]) -> None:
-    """Write progress JSONL atomically and force-flush to Drive."""
-    tmp = progress_file.with_suffix(".jsonl.tmp")
-    with open(tmp, "w") as f:
-        for r in records:
+def _load_progress(progress_file: Path) -> tuple[list[dict], set[str]]:
+    """Load progress; dedupe by _item_id (last line wins). Skips bad JSON lines."""
+    if not progress_file.exists():
+        return [], set()
+    by_id: dict[str, dict] = {}
+    bad = 0
+    for i, line in enumerate(progress_file.read_text(encoding="utf-8").splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            bad += 1
+            continue
+        if not isinstance(row, dict):
+            continue
+        iid = row.get("_item_id", "")
+        if iid:
+            by_id[iid] = row
+    if bad:
+        logger.warning(f"Skipped {bad} bad line(s) in {progress_file.name}")
+    records = list(by_id.values())
+    return records, set(by_id.keys())
+
+
+def _append_progress(progress_file: Path, records: list[dict], start: int) -> int:
+    """Append records[start:] to JSONL (never truncates). Returns new start index."""
+    if start >= len(records):
+        return start
+    progress_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(progress_file, "a", encoding="utf-8") as f:
+        for r in records[start:]:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
         f.flush()
         os.fsync(f.fileno())
-    tmp.rename(progress_file)
     _fsync_path(progress_file)
     _fsync_path(progress_file.parent)
+    return len(records)
 
 
 def save_image(pil_image, path: Path) -> bool:
@@ -229,23 +259,19 @@ def main() -> None:
         sys.exit(1)
 
     progress_file = out_dir / "labeling_progress.jsonl"
-    completed_ids: set[str] = set()
-    records: list[dict] = []
-
-    # Always load existing progress to avoid overwriting it
-    if progress_file.exists():
-        for line in progress_file.read_text().strip().splitlines():
-            row = json.loads(line)
-            records.append(row)
-            completed_ids.add(row.get("_item_id", ""))
-        if records:
-            logger.info(f"Found {len(records)} existing rows in progress file")
-            if not args.resume:
-                logger.error(
-                    f"Progress file has {len(records)} rows. "
-                    f"Use --resume to continue, or delete {progress_file} to start fresh."
-                )
-                sys.exit(1)
+    if args.fresh and progress_file.exists():
+        bak = progress_file.with_suffix(".jsonl.bak")
+        progress_file.rename(bak)
+        logger.warning(f"--fresh: moved existing progress to {bak.name}")
+    records, completed_ids = _load_progress(progress_file)
+    append_from = len(records)
+    if records:
+        logger.info(
+            f"RESUME: {len(records)} rows on disk — new labels will APPEND (old rows are never wiped). "
+            f"Use --fresh to restart from zero."
+        )
+    else:
+        logger.info("Starting new labeling_progress.jsonl (append-only checkpoints)")
 
     logger.info(f"Loading dataset: {args.hf_dataset} (offset={args.offset}, max={args.max_rows})")
     dataset = load_dataset(args.hf_dataset, split=args.hf_split, streaming=True)
@@ -325,17 +351,20 @@ def main() -> None:
             logger.info(f"  [{labeled}/{args.max_rows}] {item_id}: {tags.get('category')} "
                         f"| cost ~${est_cost:.2f}")
 
-        # Periodic save (force-flush for Colab Drive FUSE)
-        if labeled % args.batch_save_every == 0:
-            _flush_save(progress_file, records)
-            logger.info(f"  Progress saved ({labeled} rows)")
+        # Append every N *new* rows (not total labeled — works correctly on resume)
+        pending = len(records) - append_from
+        if pending >= args.batch_save_every:
+            append_from = _append_progress(progress_file, records, append_from)
+            logger.info(f"  Progress appended {pending} rows (total {len(records)} in memory / on disk)")
 
         if est_cost > args.cost_limit:
             logger.warning(f"Cost limit ${args.cost_limit} reached. Stopping.")
             break
 
-    # Final save of progress
-    _flush_save(progress_file, records)
+    # Flush any remaining rows not yet appended
+    if len(records) > append_from:
+        _append_progress(progress_file, records, append_from)
+        logger.info(f"  Final append: {len(records) - append_from} rows")
 
     # Split into train/val/test
     import random
