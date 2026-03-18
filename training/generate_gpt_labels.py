@@ -87,7 +87,13 @@ def parse_args() -> argparse.Namespace:
         "--api-key-file",
         default=None,
         metavar="PATH",
-        help="Text file with OpenAI API key on first line (recommended on Colab; env OPENAI_API_KEY often missing in !python).",
+        help="Text file with OpenAI API key on first line (safer than --api-key on Colab).",
+    )
+    p.add_argument(
+        "--api-key",
+        default=None,
+        metavar="KEY",
+        help="OpenAI API key inline (shows in shell history — use --api-key-file if possible).",
     )
     return p.parse_args()
 
@@ -231,8 +237,10 @@ def save_image(pil_image, path: Path) -> bool:
 def main() -> None:
     args = parse_args()
 
-    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
-    if args.api_key_file:
+    api_key = ""
+    if args.api_key:
+        api_key = args.api_key.strip()
+    elif args.api_key_file:
         kpath = Path(args.api_key_file).expanduser()
         if not kpath.is_absolute():
             kpath = kpath.resolve()
@@ -241,9 +249,11 @@ def main() -> None:
             sys.exit(1)
         lines = [ln.strip() for ln in kpath.read_text(encoding="utf-8").splitlines() if ln.strip()]
         api_key = lines[0] if lines else ""
+    else:
+        api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
     if not api_key:
         print(
-            "ERROR: Set OPENAI_API_KEY or pass --api-key-file /path/to/key.txt (one line).",
+            "ERROR: Pass --api-key, --api-key-file, or set OPENAI_API_KEY.",
             file=sys.stderr,
         )
         sys.exit(1)
