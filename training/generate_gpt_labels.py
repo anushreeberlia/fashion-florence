@@ -58,7 +58,6 @@ JSON only, no markdown."""
 FLORENCE_PROMPT = "Analyze this clothing item image and return structured fashion tags as JSON."
 
 MAX_IMAGE_SIZE = 512
-OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 OPENAI_VISION_MODEL = "gpt-4o-mini"
 
 
@@ -95,6 +94,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         metavar="KEY",
         help="OpenAI API key inline (shows in shell history — use --api-key-file if possible).",
+    )
+    p.add_argument(
+        "--use-responses",
+        action="store_true",
+        help="Use /v1/responses (can error on some accounts). Default: chat/completions (stable for vision).",
     )
     return p.parse_args()
 
@@ -135,13 +139,46 @@ def _sanitize_api_key(raw: str) -> str:
     return k
 
 
-def call_gpt_vision(image_b64: str, api_key: str, retries: int = 3) -> dict | None:
-    """Send image via Responses API; return parsed JSON dict or None on failure."""
-    key = _sanitize_api_key(api_key)
-    if not key:
-        logger.error("OpenAI API key is empty — use --api-key, --api-key-file, or OPENAI_API_KEY")
+def _gpt_parse_json_text(text: str) -> dict | None:
+    t = (text or "").strip()
+    if t.startswith("```"):
+        lines = t.split("\n")
+        t = "\n".join(lines[1:-1])
+    try:
+        return json.loads(t)
+    except json.JSONDecodeError:
         return None
 
+
+def _call_openai_chat(client, image_b64: str) -> str | None:
+    """Chat Completions + vision (stable). Returns assistant text or None."""
+    r = client.chat.completions.create(
+        model=OPENAI_VISION_MODEL,
+        messages=[
+            {"role": "system", "content": GPT_SYSTEM},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": GPT_PROMPT},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_b64}",
+                            "detail": "low",
+                        },
+                    },
+                ],
+            },
+        ],
+        temperature=0.2,
+        max_tokens=500,
+    )
+    msg = r.choices[0].message.content
+    return (msg or "").strip() if msg else None
+
+
+def _call_openai_responses(client, image_b64: str) -> str | None:
+    """Responses API. Returns assistant text or None."""
     payload_input = [
         {
             "role": "user",
@@ -155,36 +192,58 @@ def call_gpt_vision(image_b64: str, api_key: str, retries: int = 3) -> dict | No
             ],
         }
     ]
+    r = client.responses.create(
+        model=OPENAI_VISION_MODEL,
+        instructions=GPT_SYSTEM,
+        input=payload_input,
+        temperature=0.2,
+        max_output_tokens=500,
+    )
+    data = r.model_dump() if hasattr(r, "model_dump") else {}
+    text = _responses_output_text(data)
+    if not text and hasattr(r, "output_text"):
+        text = (getattr(r, "output_text", None) or "").strip()
+    return text or None
+
+
+def call_gpt_vision(
+    image_b64: str,
+    api_key: str,
+    retries: int = 3,
+    *,
+    use_responses: bool = False,
+) -> dict | None:
+    """Vision + JSON tags. Default: chat/completions. Pass use_responses=True for /v1/responses."""
+    key = _sanitize_api_key(api_key)
+    if not key:
+        logger.error("OpenAI API key is empty — use --api-key, --api-key-file, or OPENAI_API_KEY")
+        return None
+
+    try:
+        from openai import OpenAI
+    except ImportError:
+        logger.error("Run: pip install -q openai")
+        return None
+
+    client = OpenAI(api_key=key, base_url="https://api.openai.com/v1")
+    backend = "responses" if use_responses else "chat"
 
     for attempt in range(retries):
         try:
-            # Official SDK sets Authorization correctly (avoids empty Bearer in some Colab/httpx setups)
-            try:
-                from openai import OpenAI
-            except ImportError:
-                logger.error("Run: pip install -q openai  (required for OpenAI Responses API)")
-                return None
-
-            client = OpenAI(api_key=key, base_url="https://api.openai.com/v1")
-            r = client.responses.create(
-                model=OPENAI_VISION_MODEL,
-                instructions=GPT_SYSTEM,
-                input=payload_input,
-                temperature=0.2,
-                max_output_tokens=500,
-            )
-            data = r.model_dump() if hasattr(r, "model_dump") else {}
-            text = _responses_output_text(data)
-            if not text and hasattr(r, "output_text"):
-                text = (getattr(r, "output_text", None) or "").strip()
+            if use_responses:
+                text = _call_openai_responses(client, image_b64)
+            else:
+                text = _call_openai_chat(client, image_b64)
             if not text:
-                logger.warning(f"No output_text in response: {str(data)[:400]}")
+                logger.warning(f"No text from OpenAI ({backend})")
                 time.sleep(2)
                 continue
-            if text.startswith("```"):
-                lines = text.split("\n")
-                text = "\n".join(lines[1:-1])
-            return json.loads(text)
+            parsed = _gpt_parse_json_text(text)
+            if parsed is None:
+                logger.warning(f"Attempt {attempt + 1}: model returned non-JSON ({backend})")
+                time.sleep(2)
+                continue
+            return parsed
 
         except json.JSONDecodeError as e:
             logger.warning(f"Attempt {attempt + 1} JSON parse failed: {e}")
@@ -201,7 +260,7 @@ def call_gpt_vision(image_b64: str, api_key: str, retries: int = 3) -> dict | No
                     "OpenAI auth failed. Check key at platform.openai.com/api-keys; "
                     "use --api-key-file with one line sk-... (no quotes)."
                 )
-            logger.warning(f"Attempt {attempt + 1} failed: {e}")
+            logger.warning(f"Attempt {attempt + 1} failed ({backend}): {e}")
             time.sleep(2)
 
     return None
@@ -307,6 +366,10 @@ def main() -> None:
         sys.exit(1)
     os.environ["OPENAI_API_KEY"] = api_key
     logger.info(f"OpenAI key OK (length {len(api_key)} chars)")
+    if args.use_responses:
+        logger.info("OpenAI backend: Responses API (/v1/responses)")
+    else:
+        logger.info("OpenAI backend: chat/completions (default; omit --use-responses if Responses errors)")
 
     # Empty HF_TOKEN makes the Hub send "Bearer " with no token → same JSON error as OpenAI 401
     for _hf_env in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
@@ -425,7 +488,12 @@ def main() -> None:
         image_b64 = base64.b64encode(resized).decode("utf-8")
 
         # Call GPT-4o mini
-        tags = call_gpt_vision(image_b64, api_key, retries=args.max_retries)
+        tags = call_gpt_vision(
+            image_b64,
+            api_key,
+            retries=args.max_retries,
+            use_responses=args.use_responses,
+        )
         if not isinstance(tags, dict):
             errors += 1
             logger.warning(f"  [{labeled}/{args.max_rows}] {item_id}: GPT returned non-dict, skipping")
