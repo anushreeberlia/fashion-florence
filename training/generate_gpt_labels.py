@@ -29,7 +29,6 @@ import time
 from io import BytesIO
 from pathlib import Path
 
-import httpx
 from PIL import Image
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -127,63 +126,59 @@ def _responses_output_text(data: dict) -> str | None:
     return None
 
 
+def _sanitize_api_key(raw: str) -> str:
+    k = (raw or "").strip()
+    if k.startswith("\ufeff"):
+        k = k[1:].strip()
+    if (k.startswith('"') and k.endswith('"')) or (k.startswith("'") and k.endswith("'")):
+        k = k[1:-1].strip()
+    return k
+
+
 def call_gpt_vision(image_b64: str, api_key: str, retries: int = 3) -> dict | None:
     """Send image via Responses API; return parsed JSON dict or None on failure."""
-    key = (api_key or "").strip()
+    key = _sanitize_api_key(api_key)
     if not key:
         logger.error("OpenAI API key is empty — use --api-key, --api-key-file, or OPENAI_API_KEY")
         return None
+
+    payload_input = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": GPT_PROMPT},
+                {
+                    "type": "input_image",
+                    "image_url": f"data:image/jpeg;base64,{image_b64}",
+                    "detail": "low",
+                },
+            ],
+        }
+    ]
+
     for attempt in range(retries):
         try:
-            resp = httpx.post(
-                OPENAI_RESPONSES_URL,
-                headers={
-                    "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": OPENAI_VISION_MODEL,
-                    "instructions": GPT_SYSTEM,
-                    "input": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "input_text", "text": GPT_PROMPT},
-                                {
-                                    "type": "input_image",
-                                    "image_url": f"data:image/jpeg;base64,{image_b64}",
-                                    "detail": "low",
-                                },
-                            ],
-                        }
-                    ],
-                    "temperature": 0.2,
-                    "max_output_tokens": 500,
-                },
-                timeout=60.0,
+            # Official SDK sets Authorization correctly (avoids empty Bearer in some Colab/httpx setups)
+            try:
+                from openai import OpenAI
+            except ImportError:
+                logger.error("Run: pip install -q openai  (required for OpenAI Responses API)")
+                return None
+
+            client = OpenAI(api_key=key)
+            r = client.responses.create(
+                model=OPENAI_VISION_MODEL,
+                instructions=GPT_SYSTEM,
+                input=payload_input,
+                temperature=0.2,
+                max_output_tokens=500,
             )
-
-            if resp.status_code == 429:
-                wait = min(2 ** (attempt + 1), 30)
-                logger.warning(f"Rate limited, waiting {wait}s...")
-                time.sleep(wait)
-                continue
-
-            if resp.status_code != 200:
-                body = resp.text[:500]
-                logger.warning(f"GPT error {resp.status_code}: {body}")
-                if "bearer" in body.lower() or resp.status_code == 401:
-                    logger.error(
-                        "Auth failed. Use --api-key=\"sk-...\" (equals + quotes) or "
-                        "--api-key-file so the key is not lost to the shell."
-                    )
-                time.sleep(2)
-                continue
-
-            data = resp.json()
+            data = r.model_dump() if hasattr(r, "model_dump") else {}
             text = _responses_output_text(data)
+            if not text and hasattr(r, "output_text"):
+                text = (getattr(r, "output_text", None) or "").strip()
             if not text:
-                logger.warning(f"No output_text in response: {str(data)[:300]}")
+                logger.warning(f"No output_text in response: {str(data)[:400]}")
                 time.sleep(2)
                 continue
             if text.startswith("```"):
@@ -191,7 +186,21 @@ def call_gpt_vision(image_b64: str, api_key: str, retries: int = 3) -> dict | No
                 text = "\n".join(lines[1:-1])
             return json.loads(text)
 
-        except (json.JSONDecodeError, KeyError, httpx.TimeoutException) as e:
+        except json.JSONDecodeError as e:
+            logger.warning(f"Attempt {attempt + 1} JSON parse failed: {e}")
+            time.sleep(2)
+        except Exception as e:
+            err = str(e).lower()
+            if "rate" in err or "429" in str(e):
+                wait = min(2 ** (attempt + 1), 30)
+                logger.warning(f"Rate limited, waiting {wait}s...")
+                time.sleep(wait)
+                continue
+            if "401" in str(e) or "bearer" in err or "authentication" in err or "api key" in err:
+                logger.error(
+                    "OpenAI auth failed. Check key at platform.openai.com/api-keys; "
+                    "use --api-key-file with one line sk-... (no quotes)."
+                )
             logger.warning(f"Attempt {attempt + 1} failed: {e}")
             time.sleep(2)
 
@@ -275,7 +284,7 @@ def main() -> None:
 
     api_key = ""
     if args.api_key:
-        api_key = args.api_key.strip()
+        api_key = _sanitize_api_key(args.api_key)
     elif args.api_key_file:
         kpath = Path(args.api_key_file).expanduser()
         if not kpath.is_absolute():
@@ -284,9 +293,9 @@ def main() -> None:
             print(f"ERROR: --api-key-file not found: {kpath}", file=sys.stderr)
             sys.exit(1)
         lines = [ln.strip() for ln in kpath.read_text(encoding="utf-8").splitlines() if ln.strip()]
-        api_key = lines[0] if lines else ""
+        api_key = _sanitize_api_key(lines[0]) if lines else ""
     else:
-        api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+        api_key = _sanitize_api_key(os.getenv("OPENAI_API_KEY") or "")
     if not api_key:
         print(
             "ERROR: Pass --api-key, --api-key-file, or set OPENAI_API_KEY.",
