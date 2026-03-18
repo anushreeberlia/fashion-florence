@@ -165,7 +165,7 @@ def call_gpt_vision(image_b64: str, api_key: str, retries: int = 3) -> dict | No
                 logger.error("Run: pip install -q openai  (required for OpenAI Responses API)")
                 return None
 
-            client = OpenAI(api_key=key)
+            client = OpenAI(api_key=key, base_url="https://api.openai.com/v1")
             r = client.responses.create(
                 model=OPENAI_VISION_MODEL,
                 instructions=GPT_SYSTEM,
@@ -308,6 +308,27 @@ def main() -> None:
     os.environ["OPENAI_API_KEY"] = api_key
     logger.info(f"OpenAI key OK (length {len(api_key)} chars)")
 
+    # Empty HF_TOKEN makes the Hub send "Bearer " with no token → same JSON error as OpenAI 401
+    for _hf_env in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
+        if not (os.environ.get(_hf_env) or "").strip():
+            os.environ.pop(_hf_env, None)
+
+    try:
+        from openai import OpenAI
+
+        _c = OpenAI(api_key=api_key, base_url="https://api.openai.com/v1")
+        next(iter(_c.models.list()))
+        logger.info("OpenAI auth OK (verified with models.list)")
+    except Exception as e:
+        es = str(e).lower()
+        if "401" in str(e) or "bearer" in es or "authentication" in es or "invalid_api_key" in es:
+            logger.error(
+                "OpenAI rejected this API key. New key: https://platform.openai.com/api-keys — %s",
+                e,
+            )
+            sys.exit(1)
+        logger.warning("OpenAI models.list check inconclusive (%s); continuing.", e)
+
     from datasets import load_dataset
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -354,7 +375,12 @@ def main() -> None:
         logger.info("Starting new labeling_progress.jsonl (append-only checkpoints)")
 
     logger.info(f"Loading dataset: {args.hf_dataset} (offset={args.offset}, max={args.max_rows})")
-    dataset = load_dataset(args.hf_dataset, split=args.hf_split, streaming=True)
+    dataset = load_dataset(
+        args.hf_dataset,
+        split=args.hf_split,
+        streaming=True,
+        token=False,
+    )
     dataset = dataset.shuffle(seed=args.seed, buffer_size=50_000)
 
     # Skip past V1 rows
