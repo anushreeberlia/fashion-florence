@@ -139,6 +139,7 @@ def main() -> None:
     model = AutoModelForCausalLM.from_pretrained(
         args.model_id,
         trust_remote_code=True,
+        attn_implementation="sdpa",
     )
 
     # Some environments resolve Florence tokenizer as RobertaTokenizer.
