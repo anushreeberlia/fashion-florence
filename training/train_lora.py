@@ -86,18 +86,31 @@ class FlorenceJsonlDataset(Dataset):
             text=prompt,
             images=image,
             return_tensors="pt",
-            padding="max_length",
-            truncation=True,
-            max_length=self.max_input_length,
         )
+
+        # Pad/truncate input_ids to max_input_length
+        input_ids = model_inputs["input_ids"].squeeze(0)
+        attn_mask = model_inputs["attention_mask"].squeeze(0)
+        if input_ids.size(0) > self.max_input_length:
+            input_ids = input_ids[: self.max_input_length]
+            attn_mask = attn_mask[: self.max_input_length]
+        elif input_ids.size(0) < self.max_input_length:
+            pad_len = self.max_input_length - input_ids.size(0)
+            input_ids = torch.nn.functional.pad(input_ids, (0, pad_len), value=self.processor.tokenizer.pad_token_id)
+            attn_mask = torch.nn.functional.pad(attn_mask, (0, pad_len), value=0)
+        model_inputs["input_ids"] = input_ids.unsqueeze(0)
+        model_inputs["attention_mask"] = attn_mask.unsqueeze(0)
 
         target_ids = self.processor.tokenizer(
             target,
             return_tensors="pt",
-            padding="max_length",
-            truncation=True,
-            max_length=self.max_target_length,
+            add_special_tokens=False,
         )["input_ids"].squeeze(0)
+        if target_ids.size(0) > self.max_target_length:
+            target_ids = target_ids[: self.max_target_length]
+        elif target_ids.size(0) < self.max_target_length:
+            pad_len = self.max_target_length - target_ids.size(0)
+            target_ids = torch.nn.functional.pad(target_ids, (0, pad_len), value=self.processor.tokenizer.pad_token_id)
 
         target_ids[target_ids == self.processor.tokenizer.pad_token_id] = -100
 
