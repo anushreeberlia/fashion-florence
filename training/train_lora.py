@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--per-device-batch-size", type=int, default=2)
     parser.add_argument("--grad-accum", type=int, default=8)
     parser.add_argument("--max-input-length", type=int, default=128)
-    parser.add_argument("--max-target-length", type=int, default=256)
+    parser.add_argument("--max-target-length", type=int, default=512)
 
     parser.add_argument("--lora-r", type=int, default=16)
     parser.add_argument("--lora-alpha", type=int, default=32)
